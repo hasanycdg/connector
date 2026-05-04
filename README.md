@@ -57,11 +57,13 @@ src/
     rateLimit.ts
   routes/
     auth.routes.ts
+    dashboard.routes.ts
     jobs.routes.ts
     twilio.routes.ts
   services/
     approval.service.ts
     auditLog.service.ts
+    dashboard.service.ts
     auth.service.ts
     googleBusiness.service.ts
     openaiReply.service.ts
@@ -126,6 +128,21 @@ npm run dev
 - `firebase/analytics` is intentionally **not** initialized in backend runtime (Analytics is browser-only).
 
 ## API Endpoints
+
+### Dashboard
+
+#### `GET /dashboard`
+Server-rendered management dashboard for:
+- customer onboarding
+- OAuth start/reconnect
+- business/review status overview
+- manual polling trigger
+
+#### `GET /dashboard/businesses/:businessId`
+Business detail page with:
+- reviews + AI suggestions + approval token state
+- audit logs
+- WhatsApp number update form
 
 ### Auth
 

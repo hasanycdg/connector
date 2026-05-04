@@ -12,3 +12,4 @@ frontend/node_modules
 backend/prisma/dev.db*
 
 /src/generated/prisma
+README.md

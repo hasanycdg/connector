@@ -398,7 +398,8 @@ const updateWhatsappSchema = z.object({
 router.post(
   "/businesses/:businessId/whatsapp",
   asyncHandler(async (request, response) => {
-    const businessId = request.params.businessId;
+    const rawBusinessId = request.params.businessId;
+    const businessId = Array.isArray(rawBusinessId) ? rawBusinessId[0] : rawBusinessId;
 
     if (!businessId) {
       throw new AppError("Business ID fehlt.", 400);
@@ -419,7 +420,8 @@ router.post(
 router.get(
   "/businesses/:businessId",
   asyncHandler(async (request, response) => {
-    const businessId = request.params.businessId;
+    const rawBusinessId = request.params.businessId;
+    const businessId = Array.isArray(rawBusinessId) ? rawBusinessId[0] : rawBusinessId;
 
     if (!businessId) {
       throw new AppError("Business ID fehlt.", 400);
