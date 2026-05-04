@@ -9,7 +9,3 @@ coverage
 *.log
 backend/node_modules
 frontend/node_modules
-backend/prisma/dev.db*
-
-/src/generated/prisma
-README.md

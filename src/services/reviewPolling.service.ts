@@ -1,9 +1,15 @@
 import { randomBytes } from "crypto";
-import type { Business } from "@prisma/client";
 import { env } from "../config/env.js";
 import { logger } from "../config/logger.js";
 import { decryptText } from "../lib/encryption.js";
-import { prisma } from "../lib/prisma.js";
+import {
+  createApprovalToken,
+  createReview,
+  findReviewByBusinessAndGoogleId,
+  listBusinesses,
+  updateReviewFields
+} from "../lib/firestoreStore.js";
+import type { BusinessRecord } from "../types/domain.js";
 import { writeAuditLog } from "./auditLog.service.js";
 import {
   fetchLocationReviews,
@@ -25,45 +31,38 @@ const sleep = async (ms: number): Promise<void> => {
   });
 };
 
-const createApprovalToken = async (reviewId: string): Promise<string> => {
+const createApprovalTokenString = async (
+  reviewId: string,
+  businessId: string
+): Promise<string> => {
   const token = randomBytes(32).toString("hex");
 
-  await prisma.approvalToken.create({
-    data: {
-      reviewId,
-      token,
-      expiresAt: new Date(Date.now() + 48 * 60 * 60 * 1000)
-    }
+  await createApprovalToken({
+    reviewId,
+    businessId,
+    token,
+    expiresAt: new Date(Date.now() + 48 * 60 * 60 * 1000)
   });
 
   return token;
 };
 
-const processReview = async (business: Business, review: GoogleReview): Promise<boolean> => {
-  const existingReview = await prisma.review.findUnique({
-    where: {
-      businessId_googleReviewId: {
-        businessId: business.id,
-        googleReviewId: review.reviewId
-      }
-    }
-  });
+const processReview = async (business: BusinessRecord, review: GoogleReview): Promise<boolean> => {
+  const existingReview = await findReviewByBusinessAndGoogleId(business.id, review.reviewId);
 
   if (existingReview) {
     return false;
   }
 
-  const createdReview = await prisma.review.create({
-    data: {
-      businessId: business.id,
-      googleReviewId: review.reviewId,
-      reviewerName: review.reviewerName,
-      rating: review.rating,
-      comment: review.comment,
-      createTime: new Date(review.createTime),
-      updateTime: new Date(review.updateTime),
-      status: "NEW"
-    }
+  const createdReview = await createReview({
+    businessId: business.id,
+    googleReviewId: review.reviewId,
+    reviewerName: review.reviewerName,
+    rating: review.rating,
+    comment: review.comment,
+    createTime: new Date(review.createTime),
+    updateTime: new Date(review.updateTime),
+    status: "NEW"
   });
 
   try {
@@ -85,13 +84,8 @@ const processReview = async (business: Business, review: GoogleReview): Promise<
       reviewComment: review.comment
     });
 
-    await prisma.review.update({
-      where: {
-        id: createdReview.id
-      },
-      data: {
-        aiSuggestedReply: aiReply
-      }
+    await updateReviewFields(createdReview.id, {
+      aiSuggestedReply: aiReply
     });
 
     await writeAuditLog({
@@ -103,7 +97,7 @@ const processReview = async (business: Business, review: GoogleReview): Promise<
       }
     });
 
-    const approvalToken = await createApprovalToken(createdReview.id);
+    const approvalToken = await createApprovalTokenString(createdReview.id, business.id);
 
     await sendReviewApprovalMessage({
       to: business.whatsappNumber,
@@ -115,13 +109,8 @@ const processReview = async (business: Business, review: GoogleReview): Promise<
       approvalToken
     });
 
-    await prisma.review.update({
-      where: {
-        id: createdReview.id
-      },
-      data: {
-        status: "SENT_TO_WHATSAPP"
-      }
+    await updateReviewFields(createdReview.id, {
+      status: "SENT_TO_WHATSAPP"
     });
 
     await writeAuditLog({
@@ -135,13 +124,8 @@ const processReview = async (business: Business, review: GoogleReview): Promise<
 
     return true;
   } catch (error) {
-    await prisma.review.update({
-      where: {
-        id: createdReview.id
-      },
-      data: {
-        status: "ERROR"
-      }
+    await updateReviewFields(createdReview.id, {
+      status: "ERROR"
     });
 
     await writeAuditLog({
@@ -157,7 +141,7 @@ const processReview = async (business: Business, review: GoogleReview): Promise<
   }
 };
 
-const processBusiness = async (business: Business): Promise<number> => {
+const processBusiness = async (business: BusinessRecord): Promise<number> => {
   const refreshToken = decryptText(business.googleRefreshTokenEncrypted);
   const accessToken = await refreshGoogleAccessToken(refreshToken);
 
@@ -193,11 +177,7 @@ const processBusiness = async (business: Business): Promise<number> => {
 export const pollReviewsForAllBusinesses = async (
   triggeredBy: "manual" | "cron"
 ): Promise<PollSummary> => {
-  const businesses = await prisma.business.findMany({
-    orderBy: {
-      createdAt: "asc"
-    }
-  });
+  const businesses = await listBusinesses();
 
   const summary: PollSummary = {
     businessesProcessed: 0,

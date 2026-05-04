@@ -1,40 +1,38 @@
-# Google Business Profile Review Assistant (Secure Backend MVP)
+# Google Business Profile Review Assistant (Firebase Backend MVP)
 
 Secure TypeScript/Express backend MVP for this flow:
 
 1. Business owner connects Google Business Profile via OAuth.
-2. Refresh token is stored encrypted (AES-256-GCM).
+2. Google refresh token is encrypted at rest.
 3. Scheduled polling checks reviews twice daily.
 4. New reviews are stored (deduplicated).
 5. AI reply suggestions are generated.
-6. Review + suggestion is sent to owner via WhatsApp (Twilio).
+6. Review + suggestion is sent via WhatsApp (Twilio).
 7. Owner must explicitly approve/reject.
 8. Only approved exact reply is posted to Google.
 
-## Tech Stack
+## Stack
 
 - Node.js + TypeScript
 - Express.js
-- PostgreSQL
-- Prisma ORM
+- Firebase Admin SDK (Cloud Firestore)
 - Google OAuth 2.0 + Google Business Profile APIs
 - Twilio WhatsApp API
 - OpenAI API
-- Firebase Web SDK config (initialized in backend for shared project config)
 - node-cron
 
-## Security Controls Implemented
+## Security Controls
 
-- Google refresh tokens encrypted at rest using AES-256-GCM (`TOKEN_ENCRYPTION_KEY`).
+- Google refresh tokens encrypted at rest with AES-256-GCM (`TOKEN_ENCRYPTION_KEY`).
 - Twilio webhook signature validation (`X-Twilio-Signature`).
 - Approval tokens are random, long (64 hex chars), single-use, and expire in 48h.
 - Reply editing via WhatsApp is not supported in MVP.
-- Only exact stored `aiSuggestedReply` is posted to Google after explicit approval.
-- Approval audit logging includes timestamp, WhatsApp number, review ID, reply text.
-- Duplicate reviews prevented with DB unique constraint.
-- Duplicate WhatsApp notifications prevented by one-time new-review processing.
-- Rate limiting for public endpoints.
-- Secrets loaded from environment variables only.
+- Only exact stored `aiSuggestedReply` is posted after explicit approval.
+- Approval audit logging includes timestamp, WhatsApp number, review ID, and reply text.
+- Duplicate reviews prevented by `(businessId, googleReviewId)` dedupe check.
+- Duplicate WhatsApp notifications prevented by one-time new review processing.
+- Rate limiting on public endpoints.
+- Secrets loaded from environment variables.
 
 ## Project Structure
 
@@ -44,13 +42,14 @@ src/
   server.ts
   config/
     env.ts
+    firebase.ts
     logger.ts
   jobs/
     scheduler.ts
   lib/
     encryption.ts
     errors.ts
-    prisma.ts
+    firestoreStore.ts
   middleware/
     asyncHandler.ts
     errorHandler.ts
@@ -63,29 +62,26 @@ src/
   services/
     approval.service.ts
     auditLog.service.ts
-    dashboard.service.ts
     auth.service.ts
+    dashboard.service.ts
     googleBusiness.service.ts
     openaiReply.service.ts
     reviewPolling.service.ts
     twilio.service.ts
-prisma/
-  schema.prisma
-sql/
-  schema.sql
+  types/
+    domain.ts
+    express.d.ts
 ```
 
-## Database Schema
+## Data Model (Firestore Collections)
 
-- Prisma schema: `prisma/schema.prisma`
-- SQL schema export: `sql/schema.sql`
+- `review_assistant_users`
+- `review_assistant_businesses`
+- `review_assistant_reviews`
+- `review_assistant_approval_tokens`
+- `review_assistant_audit_logs`
 
-Core tables:
-- `users`
-- `businesses`
-- `reviews`
-- `approval_tokens`
-- `audit_logs`
+Prefix is configurable via `FIRESTORE_COLLECTION_PREFIX`.
 
 ## Setup
 
@@ -99,22 +95,10 @@ npm install
 
 ```bash
 cp .env.example .env
-# fill all required values
+# fill required values
 ```
 
-3. Generate Prisma client:
-
-```bash
-npm run prisma:generate
-```
-
-4. Run migrations:
-
-```bash
-npm run prisma:migrate
-```
-
-5. Start development server:
+3. Start development server:
 
 ```bash
 npm run dev
@@ -122,27 +106,41 @@ npm run dev
 
 `npm run dev` is configured to load `.env.example` via `ENV_FILE=.env.example` for local testing.
 
-## Firebase SDK
+## Firebase Credentials
 
-- Firebase config is stored in env vars and initialized at server startup in `src/config/firebase.ts`.
-- `firebase/analytics` is intentionally **not** initialized in backend runtime (Analytics is browser-only).
+Use one of these options:
 
-## API Endpoints
+1. Service account env vars:
+- `FIREBASE_PROJECT_ID`
+- `FIREBASE_CLIENT_EMAIL`
+- `FIREBASE_PRIVATE_KEY` (with `\n` escaped newlines)
 
-### Dashboard
+2. Application Default Credentials:
+- `FIREBASE_USE_APPLICATION_DEFAULT=true`
 
-#### `GET /dashboard`
+For local emulator:
+- Set `FIRESTORE_EMULATOR_HOST=localhost:8080`
+
+Reference: Firebase docs for Admin SDK + emulator behavior:
+- https://firebase.google.com/docs/admin/setup
+- https://firebase.google.com/docs/emulator-suite/connect_firestore
+
+## Dashboard
+
+### `GET /dashboard`
 Server-rendered management dashboard for:
 - customer onboarding
 - OAuth start/reconnect
 - business/review status overview
 - manual polling trigger
 
-#### `GET /dashboard/businesses/:businessId`
+### `GET /dashboard/businesses/:businessId`
 Business detail page with:
 - reviews + AI suggestions + approval token state
 - audit logs
 - WhatsApp number update form
+
+## API Endpoints
 
 ### Auth
 
@@ -154,12 +152,7 @@ Query parameters:
 - `whatsappNumber` (required)
 - `googleAccountId` (optional)
 - `googleLocationId` (optional)
-
-Example:
-
-```text
-/auth/google?email=owner@example.com&whatsappNumber=+49123456789
-```
+- `redirectTo` (optional, internal dashboard redirect)
 
 #### `GET /auth/google/callback`
 - Exchanges code for tokens.
@@ -171,7 +164,7 @@ Example:
 ### Webhook
 
 #### `POST /webhooks/twilio/whatsapp`
-Receives WhatsApp replies from Twilio.
+Receives WhatsApp replies.
 
 Supported commands:
 - `APPROVE <token>`
@@ -180,8 +173,8 @@ Supported commands:
 Approval behavior:
 - validates token + expiry + single-use
 - validates sender WhatsApp number
-- logs approval with timestamp, phone, review ID, and exact reply text
-- posts exact stored AI reply to Google only after approval
+- logs approval with timestamp, phone, review ID, exact reply text
+- posts exact stored AI reply only after explicit approval
 
 ### Internal
 
@@ -208,33 +201,8 @@ Configured by env:
 
 This runs at 10:00 and 18:00 local scheduler timezone.
 
-Additional jitter (`POLL_STAGGER_SECONDS`) reduces simultaneous processing bursts.
+## Notes
 
-## WhatsApp Message Template
-
-```text
-New Google Review
-
-Business: {{businessName}}
-Rating: {{rating}}/5
-Reviewer: {{reviewerName}}
-
-Review:
-"{{reviewComment}}"
-
-Suggested reply:
-"{{aiSuggestedReply}}"
-
-To approve and post this exact reply to Google, reply:
-APPROVE {{token}}
-
-To reject:
-REJECT {{token}}
-```
-
-## Notes for Production Hardening
-
-- Put app behind HTTPS + trusted reverse proxy.
-- Lock down `/jobs/poll-reviews` at network and auth layer.
-- Add retry queues/dead-letter handling for external API failures.
-- Add monitoring/alerts around `ERROR` review status and failed audit writes.
+- Root (`/`) redirects to `/dashboard`.
+- If Firestore is unavailable, dashboard shows a warning with empty data.
+- For production, lock down `/jobs/poll-reviews` and run behind HTTPS/proxy.

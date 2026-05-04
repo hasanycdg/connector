@@ -1,16 +1,21 @@
-import { ReviewStatus } from "@prisma/client";
 import { AppError } from "../lib/errors.js";
-import { prisma } from "../lib/prisma.js";
+import {
+  countReviews,
+  countUsers,
+  findUserById,
+  getBusinessById,
+  listApprovalTokensByReviewId,
+  listAuditLogsByBusinessId,
+  listBusinesses,
+  listReviews,
+  listReviewsByBusinessId,
+  updateBusinessWhatsapp
+} from "../lib/firestoreStore.js";
+import type { ReviewStatus } from "../types/domain.js";
+import { REVIEW_STATUS_VALUES } from "../types/domain.js";
 import { writeAuditLog } from "./auditLog.service.js";
 
-const REVIEW_STATUSES: ReviewStatus[] = [
-  "NEW",
-  "SENT_TO_WHATSAPP",
-  "APPROVED",
-  "POSTED",
-  "REJECTED",
-  "ERROR"
-];
+const REVIEW_STATUSES: ReviewStatus[] = [...REVIEW_STATUS_VALUES];
 
 const initializeStatusCounts = (): Record<ReviewStatus, number> => ({
   NEW: 0,
@@ -83,53 +88,54 @@ export interface DashboardBusinessDetail {
 }
 
 export const getDashboardOverview = async (): Promise<DashboardOverview> => {
-  const [businesses, usersCount, reviewsCount, groupedByStatus] = await Promise.all([
-    prisma.business.findMany({
-      include: {
-        user: {
-          select: {
-            email: true
-          }
-        },
-        _count: {
-          select: {
-            reviews: true
-          }
-        }
-      },
-      orderBy: {
-        createdAt: "desc"
-      }
-    }),
-    prisma.user.count(),
-    prisma.review.count(),
-    prisma.review.groupBy({
-      by: ["businessId", "status"],
-      _count: {
-        _all: true
-      }
-    })
+  const [businesses, usersCount, reviewsCount, allReviews] = await Promise.all([
+    listBusinesses(),
+    countUsers(),
+    countReviews(),
+    listReviews()
   ]);
 
-  const statusesByBusinessId = new Map<string, Record<ReviewStatus, number>>();
+  const userMap = new Map<string, string>();
+  const statusMapByBusiness = new Map<string, Record<ReviewStatus, number>>();
+  const reviewsCountByBusiness = new Map<string, number>();
 
-  for (const group of groupedByStatus) {
-    const current = statusesByBusinessId.get(group.businessId) ?? initializeStatusCounts();
-    current[group.status] = group._count._all;
-    statusesByBusinessId.set(group.businessId, current);
+  const uniqueUserIds = [...new Set(businesses.map((business) => business.userId))];
+  const users = await Promise.all(uniqueUserIds.map((userId) => findUserById(userId)));
+
+  for (let index = 0; index < uniqueUserIds.length; index += 1) {
+    const userId = uniqueUserIds[index];
+    const user = users[index];
+
+    if (!userId) {
+      continue;
+    }
+
+    userMap.set(userId, user?.email ?? "unknown@example.com");
   }
 
-  const mappedBusinesses: DashboardBusinessSummary[] = businesses.map((business) => ({
-    id: business.id,
-    businessName: business.businessName,
-    whatsappNumber: business.whatsappNumber,
-    googleAccountId: business.googleAccountId,
-    googleLocationId: business.googleLocationId,
-    createdAt: business.createdAt,
-    userEmail: business.user.email,
-    reviewCount: business._count.reviews,
-    statusCounts: statusesByBusinessId.get(business.id) ?? initializeStatusCounts()
-  }));
+  for (const review of allReviews) {
+    const currentStatusCounts =
+      statusMapByBusiness.get(review.businessId) ?? initializeStatusCounts();
+    currentStatusCounts[review.status] += 1;
+    statusMapByBusiness.set(review.businessId, currentStatusCounts);
+
+    const currentReviewCount = reviewsCountByBusiness.get(review.businessId) ?? 0;
+    reviewsCountByBusiness.set(review.businessId, currentReviewCount + 1);
+  }
+
+  const mappedBusinesses: DashboardBusinessSummary[] = businesses
+    .map((business) => ({
+      id: business.id,
+      businessName: business.businessName,
+      whatsappNumber: business.whatsappNumber,
+      googleAccountId: business.googleAccountId,
+      googleLocationId: business.googleLocationId,
+      createdAt: business.createdAt,
+      userEmail: userMap.get(business.userId) ?? "unknown@example.com",
+      reviewCount: reviewsCountByBusiness.get(business.id) ?? 0,
+      statusCounts: statusMapByBusiness.get(business.id) ?? initializeStatusCounts()
+    }))
+    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
 
   const totals = {
     businesses: businesses.length,
@@ -158,97 +164,61 @@ export const getDashboardOverview = async (): Promise<DashboardOverview> => {
 export const getDashboardBusinessDetail = async (
   businessId: string
 ): Promise<DashboardBusinessDetail> => {
-  const business = await prisma.business.findUnique({
-    where: {
-      id: businessId
-    },
-    include: {
-      user: {
-        select: {
-          email: true
-        }
-      }
-    }
-  });
+  const business = await getBusinessById(businessId);
 
   if (!business) {
     throw new AppError("Business not found.", 404);
   }
 
-  const [reviews, auditLogs, groupedByStatus] = await Promise.all([
-    prisma.review.findMany({
-      where: {
-        businessId
-      },
-      include: {
-        approvalTokens: {
-          orderBy: {
-            createdAt: "desc"
-          },
-          take: 1
-        }
-      },
-      orderBy: {
-        createTime: "desc"
-      },
-      take: 100
-    }),
-    prisma.auditLog.findMany({
-      where: {
-        businessId
-      },
-      orderBy: {
-        createdAt: "desc"
-      },
-      take: 120
-    }),
-    prisma.review.groupBy({
-      by: ["status"],
-      where: {
-        businessId
-      },
-      _count: {
-        _all: true
-      }
-    })
-  ]);
+  const user = await findUserById(business.userId);
+  const reviews = await listReviewsByBusinessId(businessId);
+  const auditLogs = await listAuditLogsByBusinessId(businessId);
 
   const statusCounts = initializeStatusCounts();
-  for (const group of groupedByStatus) {
-    statusCounts[group.status] = group._count._all;
+
+  for (const review of reviews) {
+    statusCounts[review.status] += 1;
   }
+
+  const reviewRows = await Promise.all(
+    reviews.slice(0, 100).map(async (review) => {
+      const latestApprovalToken = (await listApprovalTokensByReviewId(review.id, 1))[0] ?? null;
+
+      return {
+        id: review.id,
+        googleReviewId: review.googleReviewId,
+        reviewerName: review.reviewerName,
+        rating: review.rating,
+        comment: review.comment,
+        aiSuggestedReply: review.aiSuggestedReply,
+        status: review.status,
+        createTime: review.createTime,
+        updateTime: review.updateTime,
+        createdAt: review.createdAt,
+        latestApprovalToken: latestApprovalToken
+          ? {
+              token: latestApprovalToken.token,
+              expiresAt: latestApprovalToken.expiresAt,
+              usedAt: latestApprovalToken.usedAt,
+              createdAt: latestApprovalToken.createdAt
+            }
+          : null
+      };
+    })
+  );
 
   return {
     business: {
       id: business.id,
       businessName: business.businessName,
-      userEmail: business.user.email,
+      userEmail: user?.email ?? "unknown@example.com",
       whatsappNumber: business.whatsappNumber,
       googleAccountId: business.googleAccountId,
       googleLocationId: business.googleLocationId,
       createdAt: business.createdAt
     },
-    reviews: reviews.map((review) => ({
-      id: review.id,
-      googleReviewId: review.googleReviewId,
-      reviewerName: review.reviewerName,
-      rating: review.rating,
-      comment: review.comment,
-      aiSuggestedReply: review.aiSuggestedReply,
-      status: review.status,
-      createTime: review.createTime,
-      updateTime: review.updateTime,
-      createdAt: review.createdAt,
-      latestApprovalToken: review.approvalTokens[0]
-        ? {
-            token: review.approvalTokens[0].token,
-            expiresAt: review.approvalTokens[0].expiresAt,
-            usedAt: review.approvalTokens[0].usedAt,
-            createdAt: review.approvalTokens[0].createdAt
-          }
-        : null
-    })),
-    auditLogs: auditLogs.map((log) => ({
+    reviews: reviewRows,
+    auditLogs: auditLogs.slice(0, 120).map((log) => ({
       id: log.id,
       action: log.action,
       metadata: log.metadata,
@@ -262,14 +232,11 @@ export const updateBusinessWhatsappNumber = async (
   businessId: string,
   whatsappNumber: string
 ): Promise<void> => {
-  const business = await prisma.business.update({
-    where: {
-      id: businessId
-    },
-    data: {
-      whatsappNumber
-    }
-  });
+  const business = await updateBusinessWhatsapp(businessId, whatsappNumber);
+
+  if (!business) {
+    throw new AppError("Business not found.", 404);
+  }
 
   await writeAuditLog({
     businessId: business.id,

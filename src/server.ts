@@ -3,7 +3,6 @@ import { env } from "./config/env.js";
 import { initializeFirebaseSdk } from "./config/firebase.js";
 import { logger } from "./config/logger.js";
 import { startPollingScheduler } from "./jobs/scheduler.js";
-import { prisma } from "./lib/prisma.js";
 
 initializeFirebaseSdk();
 
@@ -15,8 +14,7 @@ const server = app.listen(env.PORT, () => {
 const shutdown = async (signal: string): Promise<void> => {
   logger.info({ signal }, "Shutting down server");
 
-  server.close(async () => {
-    await prisma.$disconnect();
+  server.close(() => {
     process.exit(0);
   });
 };

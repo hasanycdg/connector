@@ -15,10 +15,14 @@ const isDatabaseUnavailableError = (error: unknown): boolean => {
     return false;
   }
 
-  return (
-    error.message.includes("Can't reach database server") ||
-    error.name.includes("PrismaClientInitializationError")
-  );
+  return [
+    "Could not load the default credentials",
+    "The incoming JSON object does not contain a client_email field",
+    "14 UNAVAILABLE",
+    "Deadline exceeded",
+    "connect ECONNREFUSED",
+    "getaddrinfo ENOTFOUND"
+  ].some((fragment) => error.message.includes(fragment));
 };
 
 const router = Router();
@@ -206,7 +210,7 @@ router.get(
         businesses: []
       };
       databaseWarning =
-        "PostgreSQL ist aktuell nicht erreichbar. Dashboard wird mit leeren Daten angezeigt.";
+        "Firestore ist aktuell nicht erreichbar. Dashboard wird mit leeren Daten angezeigt.";
     }
 
     const oauthStatus = typeof request.query.oauth === "string" ? request.query.oauth : undefined;

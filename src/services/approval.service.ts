@@ -1,6 +1,12 @@
 import { AppError } from "../lib/errors.js";
 import { decryptText } from "../lib/encryption.js";
-import { prisma } from "../lib/prisma.js";
+import {
+  findApprovalTokenByToken,
+  getBusinessById,
+  getReviewById,
+  markApprovalTokenUsed,
+  updateReviewFields
+} from "../lib/firestoreStore.js";
 import { writeAuditLog } from "./auditLog.service.js";
 import { postReviewReply, refreshGoogleAccessToken } from "./googleBusiness.service.js";
 
@@ -23,25 +29,23 @@ export const handleApprovalAction = async ({
   token,
   whatsappFrom
 }: HandleApprovalInput): Promise<string> => {
-  const approvalToken = await prisma.approvalToken.findUnique({
-    where: {
-      token
-    },
-    include: {
-      review: {
-        include: {
-          business: true
-        }
-      }
-    }
-  });
+  const approvalToken = await findApprovalTokenByToken(token);
 
   if (!approvalToken) {
     return "Invalid token. Please request a new review notification.";
   }
 
-  const { review } = approvalToken;
-  const { business } = review;
+  const review = await getReviewById(approvalToken.reviewId);
+
+  if (!review) {
+    return "Review not found for this token.";
+  }
+
+  const business = await getBusinessById(review.businessId);
+
+  if (!business) {
+    return "Business not found for this token.";
+  }
 
   if (!assertAuthorizedPhone(whatsappFrom, business.whatsappNumber)) {
     await writeAuditLog({
@@ -66,24 +70,11 @@ export const handleApprovalAction = async ({
   }
 
   if (action === "REJECT") {
-    await prisma.$transaction([
-      prisma.approvalToken.update({
-        where: {
-          id: approvalToken.id
-        },
-        data: {
-          usedAt: new Date()
-        }
-      }),
-      prisma.review.update({
-        where: {
-          id: review.id
-        },
-        data: {
-          status: "REJECTED"
-        }
-      })
-    ]);
+    await markApprovalTokenUsed(approvalToken.id);
+
+    await updateReviewFields(review.id, {
+      status: "REJECTED"
+    });
 
     await writeAuditLog({
       businessId: business.id,
@@ -102,24 +93,11 @@ export const handleApprovalAction = async ({
     throw new AppError("Approved review has no stored AI reply suggestion.", 500);
   }
 
-  await prisma.$transaction([
-    prisma.approvalToken.update({
-      where: {
-        id: approvalToken.id
-      },
-      data: {
-        usedAt: new Date()
-      }
-    }),
-    prisma.review.update({
-      where: {
-        id: review.id
-      },
-      data: {
-        status: "APPROVED"
-      }
-    })
-  ]);
+  await markApprovalTokenUsed(approvalToken.id);
+
+  await updateReviewFields(review.id, {
+    status: "APPROVED"
+  });
 
   await writeAuditLog({
     businessId: business.id,
@@ -146,13 +124,8 @@ export const handleApprovalAction = async ({
       review.aiSuggestedReply
     );
 
-    await prisma.review.update({
-      where: {
-        id: review.id
-      },
-      data: {
-        status: "POSTED"
-      }
+    await updateReviewFields(review.id, {
+      status: "POSTED"
     });
 
     await writeAuditLog({
@@ -169,13 +142,8 @@ export const handleApprovalAction = async ({
 
     return "Approved. The exact stored reply was posted to Google.";
   } catch (error) {
-    await prisma.review.update({
-      where: {
-        id: review.id
-      },
-      data: {
-        status: "ERROR"
-      }
+    await updateReviewFields(review.id, {
+      status: "ERROR"
     });
 
     await writeAuditLog({

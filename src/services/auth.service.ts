@@ -3,7 +3,7 @@ import { z } from "zod";
 import { env } from "../config/env.js";
 import { encryptText } from "../lib/encryption.js";
 import { AppError } from "../lib/errors.js";
-import { prisma } from "../lib/prisma.js";
+import { upsertBusinessByGoogleMapping, upsertUserByEmail } from "../lib/firestoreStore.js";
 import {
   createGoogleAuthUrl,
   exchangeGoogleCode,
@@ -153,37 +153,15 @@ export const completeGoogleOAuth = async ({
 
   const encryptedRefreshToken = encryptText(tokens.refreshToken);
 
-  const user = await prisma.user.upsert({
-    where: {
-      email: oauthState.email
-    },
-    update: {},
-    create: {
-      email: oauthState.email
-    }
-  });
+  const user = await upsertUserByEmail(oauthState.email);
 
-  const business = await prisma.business.upsert({
-    where: {
-      googleAccountId_googleLocationId: {
-        googleAccountId: selectedLocation.accountId,
-        googleLocationId: selectedLocation.locationId
-      }
-    },
-    update: {
-      userId: user.id,
-      businessName: selectedLocation.locationTitle,
-      whatsappNumber: oauthState.whatsappNumber,
-      googleRefreshTokenEncrypted: encryptedRefreshToken
-    },
-    create: {
-      userId: user.id,
-      googleAccountId: selectedLocation.accountId,
-      googleLocationId: selectedLocation.locationId,
-      businessName: selectedLocation.locationTitle,
-      whatsappNumber: oauthState.whatsappNumber,
-      googleRefreshTokenEncrypted: encryptedRefreshToken
-    }
+  const business = await upsertBusinessByGoogleMapping({
+    userId: user.id,
+    googleAccountId: selectedLocation.accountId,
+    googleLocationId: selectedLocation.locationId,
+    businessName: selectedLocation.locationTitle,
+    whatsappNumber: oauthState.whatsappNumber,
+    googleRefreshTokenEncrypted: encryptedRefreshToken
   });
 
   await writeAuditLog({

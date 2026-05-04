@@ -1,11 +1,11 @@
-import type { Prisma } from "@prisma/client";
-import { prisma } from "../lib/prisma.js";
+import { randomUUID } from "crypto";
+import { collections, firestoreServerTimestamp, nowTimestamp, toFirestoreMetadata } from "../config/firebase.js";
 
 interface AuditLogInput {
   businessId: string;
   reviewId?: string;
   action: string;
-  metadata: Prisma.InputJsonValue;
+  metadata: unknown;
 }
 
 export const writeAuditLog = async ({
@@ -14,12 +14,15 @@ export const writeAuditLog = async ({
   action,
   metadata
 }: AuditLogInput): Promise<void> => {
-  await prisma.auditLog.create({
-    data: {
-      businessId,
-      reviewId,
-      action,
-      metadata
-    }
+  const id = randomUUID();
+
+  await collections.auditLogs().doc(id).set({
+    id,
+    businessId,
+    reviewId: reviewId ?? null,
+    action,
+    metadata: toFirestoreMetadata(metadata),
+    createdAt: firestoreServerTimestamp(),
+    createdAtClient: nowTimestamp()
   });
 };
