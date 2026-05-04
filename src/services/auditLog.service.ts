@@ -1,5 +1,4 @@
-import { randomUUID } from "crypto";
-import { collections, firestoreServerTimestamp, nowTimestamp, toFirestoreMetadata } from "../config/firebase.js";
+import { createAuditLog } from "../lib/firestoreStore.js";
 
 interface AuditLogInput {
   businessId: string;
@@ -14,15 +13,10 @@ export const writeAuditLog = async ({
   action,
   metadata
 }: AuditLogInput): Promise<void> => {
-  const id = randomUUID();
-
-  await collections.auditLogs().doc(id).set({
-    id,
+  await createAuditLog({
     businessId,
-    reviewId: reviewId ?? null,
+    reviewId,
     action,
-    metadata: toFirestoreMetadata(metadata),
-    createdAt: firestoreServerTimestamp(),
-    createdAtClient: nowTimestamp()
+    metadata
   });
 };
