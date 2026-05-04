@@ -83,6 +83,30 @@ src/
 
 Prefix is configurable via `FIRESTORE_COLLECTION_PREFIX`.
 
+## Nhost Database SQL (Copy/Paste)
+
+If you want the same data model in Nhost Postgres, use:
+
+- `sql/nhost_init.sql`
+
+How to run:
+
+1. Open your Nhost project.
+2. Go to the SQL editor.
+3. Paste the content of `sql/nhost_init.sql`.
+4. Execute it once.
+
+The script creates:
+
+- enum `review_status`
+- tables:
+  - `review_assistant_users`
+  - `review_assistant_businesses`
+  - `review_assistant_reviews`
+  - `review_assistant_approval_tokens`
+  - `review_assistant_audit_logs`
+- indexes + `updated_at` triggers
+
 ## Setup
 
 1. Install dependencies:
