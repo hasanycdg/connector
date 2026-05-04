@@ -1,0 +1,92 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum ReviewStatus {
+  NEW
+  SENT_TO_WHATSAPP
+  APPROVED
+  POSTED
+  REJECTED
+  ERROR
+}
+
+model User {
+  id         String     @id @default(cuid())
+  email      String     @unique
+  createdAt  DateTime   @default(now())
+  businesses Business[]
+}
+
+model Business {
+  id                          String     @id @default(cuid())
+  userId                      String
+  googleAccountId             String
+  googleLocationId            String
+  businessName                String
+  whatsappNumber              String
+  googleRefreshTokenEncrypted String
+  createdAt                   DateTime   @default(now())
+
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  reviews   Review[]
+  auditLogs AuditLog[]
+
+  @@unique([googleAccountId, googleLocationId])
+  @@index([userId])
+}
+
+model Review {
+  id               String       @id @default(cuid())
+  businessId       String
+  googleReviewId   String
+  reviewerName     String
+  rating           Int
+  comment          String
+  createTime       DateTime
+  updateTime       DateTime
+  aiSuggestedReply String?
+  status           ReviewStatus @default(NEW)
+  createdAt        DateTime     @default(now())
+
+  business       Business        @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  approvalTokens ApprovalToken[]
+  auditLogs      AuditLog[]
+
+  @@unique([businessId, googleReviewId])
+  @@index([businessId, status])
+}
+
+model ApprovalToken {
+  id        String    @id @default(cuid())
+  reviewId  String
+  token     String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  review Review @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+
+  @@index([reviewId])
+  @@index([expiresAt])
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  businessId String
+  reviewId  String?
+  action    String
+  metadata  Json
+  createdAt DateTime @default(now())
+
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  review   Review?  @relation(fields: [reviewId], references: [id], onDelete: SetNull)
+
+  @@index([businessId, createdAt])
+  @@index([reviewId])
+}
