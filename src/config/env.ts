@@ -7,6 +7,7 @@ dotenv.config({ path: envFilePath, override: true });
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   PORT: z.coerce.number().int().positive().default(3000),
+  TRUST_PROXY: z.enum(["true", "false"]).default("false"),
   DATABASE_URL: z.string().min(1),
   GOOGLE_CLIENT_ID: z.string().min(1),
   GOOGLE_CLIENT_SECRET: z.string().min(1),
@@ -48,5 +49,6 @@ const normalizedBaseUrl = parsedEnv.data.APP_BASE_URL.endsWith("/")
 
 export const env = {
   ...parsedEnv.data,
+  TRUST_PROXY: parsedEnv.data.TRUST_PROXY === "true",
   APP_BASE_URL: normalizedBaseUrl
 };

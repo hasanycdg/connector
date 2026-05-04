@@ -26,6 +26,25 @@ const sanitizeDashboardRedirect = (rawRedirectTo: string | undefined): string | 
   return rawRedirectTo;
 };
 
+const extractRedirectFromRawState = (rawState: string): string | undefined => {
+  const payloadPart = rawState.split(".")[0];
+
+  if (!payloadPart) {
+    return undefined;
+  }
+
+  try {
+    const jsonPayload = Buffer.from(payloadPart, "base64url").toString("utf8");
+    const parsed = JSON.parse(jsonPayload) as { redirectTo?: unknown };
+
+    return typeof parsed.redirectTo === "string"
+      ? sanitizeDashboardRedirect(parsed.redirectTo)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
 router.get(
   "/google",
   asyncHandler(async (request, response) => {
@@ -57,24 +76,38 @@ router.get(
       throw new AppError("Missing OAuth callback parameters.", 400, parsedQuery.error.format());
     }
 
-    const result = await completeGoogleOAuth(parsedQuery.data);
+    try {
+      const result = await completeGoogleOAuth(parsedQuery.data);
 
-    const redirectTarget = sanitizeDashboardRedirect(result.redirectTo);
+      const redirectTarget = sanitizeDashboardRedirect(result.redirectTo);
 
-    if (redirectTarget) {
-      const redirectUrl = new URL(redirectTarget, "http://dashboard.local");
-      redirectUrl.searchParams.set("oauth", "connected");
-      redirectUrl.searchParams.set("businessId", result.businessId);
-      redirectUrl.searchParams.set("businessName", result.selectedLocation.businessName);
+      if (redirectTarget) {
+        const redirectUrl = new URL(redirectTarget, "http://dashboard.local");
+        redirectUrl.searchParams.set("oauth", "connected");
+        redirectUrl.searchParams.set("businessId", result.businessId);
+        redirectUrl.searchParams.set("businessName", result.selectedLocation.businessName);
 
-      response.redirect(303, `${redirectUrl.pathname}${redirectUrl.search}`);
-      return;
+        response.redirect(303, `${redirectUrl.pathname}${redirectUrl.search}`);
+        return;
+      }
+
+      response.status(200).json({
+        message: "Google Business Profile connected successfully.",
+        ...result
+      });
+    } catch (error) {
+      const fallbackRedirect = extractRedirectFromRawState(parsedQuery.data.state);
+
+      if (fallbackRedirect) {
+        const redirectUrl = new URL(fallbackRedirect, "http://dashboard.local");
+        redirectUrl.searchParams.set("oauth", "failed");
+
+        response.redirect(303, `${redirectUrl.pathname}${redirectUrl.search}`);
+        return;
+      }
+
+      throw error;
     }
-
-    response.status(200).json({
-      message: "Google Business Profile connected successfully.",
-      ...result
-    });
   })
 );
 

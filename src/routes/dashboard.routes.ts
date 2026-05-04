@@ -10,6 +10,17 @@ import {
   updateBusinessWhatsappNumber
 } from "../services/dashboard.service.js";
 
+const isDatabaseUnavailableError = (error: unknown): boolean => {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  return (
+    error.message.includes("Can't reach database server") ||
+    error.name.includes("PrismaClientInitializationError")
+  );
+};
+
 const router = Router();
 
 router.use(express.urlencoded({ extended: false }));
@@ -173,7 +184,30 @@ const renderLayout = (title: string, body: string): string => `<!doctype html>
 router.get(
   "/",
   asyncHandler(async (request, response) => {
-    const overview = await getDashboardOverview();
+    let overview: Awaited<ReturnType<typeof getDashboardOverview>>;
+    let databaseWarning: string | null = null;
+
+    try {
+      overview = await getDashboardOverview();
+    } catch (error) {
+      if (!isDatabaseUnavailableError(error)) {
+        throw error;
+      }
+
+      overview = {
+        totals: {
+          businesses: 0,
+          users: 0,
+          reviews: 0,
+          pendingApprovals: 0,
+          posted: 0,
+          errors: 0
+        },
+        businesses: []
+      };
+      databaseWarning =
+        "PostgreSQL ist aktuell nicht erreichbar. Dashboard wird mit leeren Daten angezeigt.";
+    }
 
     const oauthStatus = typeof request.query.oauth === "string" ? request.query.oauth : undefined;
     const pollStatus = typeof request.query.poll === "string" ? request.query.poll : undefined;
@@ -204,8 +238,15 @@ router.get(
       notices.push("WhatsApp-Nummer wurde aktualisiert.");
     }
 
+    if (databaseWarning) {
+      notices.push(databaseWarning);
+    }
+
     const noticeHtml = notices
-      .map((notice) => `<div class="notice">${notice}</div>`)
+      .map((notice) => {
+        const className = notice.includes("nicht erreichbar") ? "notice warn" : "notice";
+        return `<div class="${className}">${notice}</div>`;
+      })
       .join("\n");
 
     const businessRows = overview.businesses
